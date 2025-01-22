@@ -12,21 +12,105 @@ app.use(express.static('public'));
 // Start the WebSocket server
 const wss = new WebSocket.Server({ noServer: true });
 
+// Track connected clients
+let connectedClients = new Set();
+
+// Broadcast a message to all connected clients
+const broadcast = (message, excludeWs = null) => {
+    wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN && client !== excludeWs) {
+            client.send(JSON.stringify(message));
+        }
+    });
+};
+
+// Get current user count
+const getUserCount = () => connectedClients.size;
+
+// Broadcast user count to all clients
+const broadcastUserCount = () => {
+    broadcast({
+        type: 'userCount',
+        count: getUserCount()
+    });
+};
+
 // Handle WebSocket connections
 wss.on('connection', (ws) => {
     console.log('New client connected');
+    
+    // Add client to tracking set
+    connectedClients.add(ws);
+    
+    // Send initial user count to the new client
+    ws.send(JSON.stringify({
+        type: 'userCount',
+        count: getUserCount()
+    }));
 
-    ws.on('message', (data) => {
-        // Broadcast data to all clients
-        wss.clients.forEach((client) => {
-            if (client !== ws && client.readyState === WebSocket.OPEN) {
-                client.send(data);
-            }
-        });
+    // Notify all users about the new connection with updated count
+    broadcast({
+        type: 'notification',
+        message: 'A new client has connected',
+        userCount: getUserCount()
     });
 
+    // Handle incoming messages from clients
+    ws.on('message', (data) => {
+        try {
+            const parsedData = JSON.parse(data);
+            
+            switch(parsedData.type) {
+                case 'userConnection':
+                    // Handle user connection/disconnection messages
+                    if (parsedData.action === 'disconnect') {
+                        connectedClients.delete(ws);
+                        broadcastUserCount();
+                    }
+                    break;
+                    
+                case 'clear':
+                    // Broadcast clear command to all clients
+                    broadcast(parsedData);
+                    break;
+                    
+                case 'draw':
+                    // Broadcast drawing data to other clients
+                    broadcast(parsedData, ws);
+                    break;
+                    
+                default:
+                    // Broadcast other messages to all clients
+                    broadcast(parsedData, ws);
+            }
+        } catch (error) {
+            console.error('Error parsing message:', error);
+        }
+    });
+
+    // Handle client disconnection
     ws.on('close', () => {
         console.log('Client disconnected');
+        
+        // Remove client from tracking set
+        connectedClients.delete(ws);
+        
+        // Notify remaining clients about disconnection with updated count
+        broadcast({
+            type: 'notification',
+            message: 'A client has disconnected',
+            userCount: getUserCount()
+        });
+        
+        // Broadcast updated user count
+        broadcastUserCount();
+    });
+
+    // Handle errors
+    ws.on('error', (error) => {
+        console.error('WebSocket error:', error);
+        connectedClients.delete(ws); // Ensure the client is removed on error
+        broadcastUserCount(); // Broadcast updated user count
     });
 });
 
